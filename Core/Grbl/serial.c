@@ -4,7 +4,6 @@
 */
 
 #include "grbl.h"
-#include "board_test.h"
 #include "usb_device.h"
 #include "usbd_cdc_if.h"
 
@@ -86,14 +85,16 @@ void grbl_serial_flush(void)
   if (usb_tx_length == 0U) {
     return;
   }
-  if (!BoardTest_IsUsbPortOpen() || hUsbDeviceFS.pClassData == NULL) {
+  if ((hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED) ||
+      (hUsbDeviceFS.pClassData == NULL)) {
     usb_tx_length = 0U;
     return;
   }
 
   hcdc = (USBD_CDC_HandleTypeDef *)hUsbDeviceFS.pClassData;
   while (hcdc->TxState != 0U) {
-    if ((sys_rt_exec_state & EXEC_RESET) || !BoardTest_IsUsbPortOpen()) {
+    if ((sys_rt_exec_state & EXEC_RESET) ||
+        (hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED)) {
       usb_tx_length = 0U;
       return;
     }
@@ -101,7 +102,7 @@ void grbl_serial_flush(void)
 
   if (CDC_Transmit_FS(usb_tx_buffer, usb_tx_length) == USBD_OK) {
     while (hcdc->TxState != 0U) {
-      if (!BoardTest_IsUsbPortOpen()) {
+      if (hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED) {
         usb_tx_length = 0U;
         return;
       }
@@ -112,10 +113,6 @@ void grbl_serial_flush(void)
 
 void serial_write(uint8_t data)
 {
-  if (!BoardTest_IsUsbPortOpen()) {
-    usb_tx_length = 0U;
-    return;
-  }
   usb_tx_buffer[usb_tx_length++] = data;
   if (usb_tx_length == USB_TX_CHUNK_SIZE || data == '\n') {
     grbl_serial_flush();
