@@ -57,6 +57,7 @@ static void report_util_setting_string(uint8_t n) {
     case 5: printPgmString(PSTR("lim inv")); break;
     case 6: printPgmString(PSTR("prb inv")); break;
     case 7: printPgmString(PSTR("prb resume")); break;
+    case 8: printPgmString(PSTR("pwm min %")); break;
     case 10: printPgmString(PSTR("rpt")); break;
     case 11: printPgmString(PSTR("jnc dev")); break;
     case 12: printPgmString(PSTR("arc tol")); break;
@@ -190,6 +191,7 @@ void report_grbl_settings() {
   report_util_uint8_setting(5,bit_istrue(settings.flags,BITFLAG_INVERT_LIMIT_PINS));
   report_util_uint8_setting(6,bit_istrue(settings.flags,BITFLAG_INVERT_PROBE_PIN));
   report_util_uint8_setting(7,settings.probe_resume_enable);
+  report_util_uint8_setting(8,settings.spindle_pwm_min_percent);
   report_util_uint8_setting(10,settings.status_report_mask);
   report_util_float_setting(11,settings.junction_deviation,N_DECIMAL_SETTINGVALUE);
   report_util_float_setting(12,settings.arc_tolerance,N_DECIMAL_SETTINGVALUE);

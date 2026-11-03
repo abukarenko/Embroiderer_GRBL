@@ -176,18 +176,30 @@ void grbl_platform_pulse_timer_start(uint16_t period)
 
 void grbl_platform_set_step_outputs(uint8_t bits)
 {
-  write_axis_pin(X_STEP_GPIO_Port, X_STEP_Pin, bits & (1U << 0));
-  write_axis_pin(Y_STEP_GPIO_Port, Y_STEP_Pin, bits & (1U << 1));
-  write_axis_pin(Z_STEP_GPIO_Port, Z_STEP_Pin, bits & (1U << 2));
-  write_axis_pin(A_STEP_GPIO_Port, A_STEP_Pin, bits & (1U << 3));
+  uint32_t gpioa_set = 0U;
+  uint32_t gpioa_reset = 0U;
+
+  GPIOB->BSRR = (bits & (1U << 0)) ? X_STEP_Pin : ((uint32_t)X_STEP_Pin << 16U);
+  GPIOC->BSRR = (bits & (1U << 1)) ? Y_STEP_Pin : ((uint32_t)Y_STEP_Pin << 16U);
+  if (bits & (1U << 2)) { gpioa_set |= Z_STEP_Pin; }
+  else { gpioa_reset |= Z_STEP_Pin; }
+  if (bits & (1U << 3)) { gpioa_set |= A_STEP_Pin; }
+  else { gpioa_reset |= A_STEP_Pin; }
+  GPIOA->BSRR = gpioa_set | (gpioa_reset << 16U);
 }
 
 void grbl_platform_set_direction_outputs(uint8_t bits)
 {
-  write_axis_pin(X_DIR_GPIO_Port, X_DIR_Pin, bits & (1U << 0));
-  write_axis_pin(Y_DIR_GPIO_Port, Y_DIR_Pin, bits & (1U << 1));
-  write_axis_pin(Z_DIR_GPIO_Port, Z_DIR_Pin, bits & (1U << 2));
-  write_axis_pin(A_DIR_GPIO_Port, A_DIR_Pin, bits & (1U << 3));
+  uint32_t gpioa_set = 0U;
+  uint32_t gpioa_reset = 0U;
+
+  GPIOB->BSRR = (bits & (1U << 0)) ? X_DIR_Pin : ((uint32_t)X_DIR_Pin << 16U);
+  GPIOC->BSRR = (bits & (1U << 1)) ? Y_DIR_Pin : ((uint32_t)Y_DIR_Pin << 16U);
+  if (bits & (1U << 2)) { gpioa_set |= Z_DIR_Pin; }
+  else { gpioa_reset |= Z_DIR_Pin; }
+  if (bits & (1U << 3)) { gpioa_set |= A_DIR_Pin; }
+  else { gpioa_reset |= A_DIR_Pin; }
+  GPIOA->BSRR = gpioa_set | (gpioa_reset << 16U);
 }
 
 uint8_t grbl_platform_limits_state(void)
@@ -217,7 +229,8 @@ uint8_t grbl_platform_control_state(void)
 
 void grbl_platform_spindle_init(void)
 {
-  BoardTest_SetSpindlePwm(0U);
+  grbl_platform_spindle_set_minimum_percent(settings.spindle_pwm_min_percent);
+  BoardTest_SetSpindlePwm(SPINDLE_PWM_OFF_VALUE);
   grbl_platform_spindle_set_enable(0U);
   grbl_platform_spindle_set_direction(0U);
 }
@@ -235,6 +248,12 @@ void grbl_platform_spindle_set_direction(uint8_t ccw)
 void grbl_platform_spindle_set_pwm(uint16_t pwm)
 {
   BoardTest_SetSpindlePwm(pwm);
+}
+
+void grbl_platform_spindle_set_minimum_percent(uint8_t percent)
+{
+  if (percent > 100U) { percent = 100U; }
+  BoardTest_SetSpindlePwmMinimum((uint16_t)percent * 10U);
 }
 
 uint8_t grbl_platform_spindle_get_enable(void)

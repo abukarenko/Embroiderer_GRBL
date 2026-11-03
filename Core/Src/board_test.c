@@ -111,6 +111,9 @@ static uint32_t rx_len;
 static volatile uint8_t command_ready;
 static volatile uint8_t usb_port_open;
 static uint16_t spindle_pwm_permille;
+static uint16_t spindle_pwm_requested_permille;
+static uint16_t spindle_pwm_minimum_permille =
+    DEFAULT_SPINDLE_PWM_MIN_PERCENT * 10U;
 static uint8_t lcd_usb_state = 0xFFU;
 static uint8_t lcd_diagnostic_phase = 3U;
 static uint8_t lcd_diagnostic_byte;
@@ -1290,8 +1293,20 @@ void BoardTest_SetSpindlePwm(uint16_t permille) {
     permille = 1000U;
   }
 
+  spindle_pwm_requested_permille = permille;
+  if (permille < spindle_pwm_minimum_permille) {
+    permille = spindle_pwm_minimum_permille;
+  }
   spindle_pwm_permille = permille;
   TIM1->CCR1 = permille;
+}
+
+void BoardTest_SetSpindlePwmMinimum(uint16_t permille) {
+  if (permille > 1000U) {
+    permille = 1000U;
+  }
+  spindle_pwm_minimum_permille = permille;
+  BoardTest_SetSpindlePwm(spindle_pwm_requested_permille);
 }
 
 void BoardTest_SetGrblStatus(const float machine_position[4],
@@ -1433,9 +1448,9 @@ void BoardTest_PwmInit(void) {
   TIM1->DIER = 0;
   TIM1->CCER = 0;
 
-  TIM1->PSC = 47U;
+  TIM1->PSC = (SystemCoreClock / 1000000U) - 1U;
   TIM1->ARR = 999U;
-  TIM1->CCR1 = 0;
+  TIM1->CCR1 = spindle_pwm_minimum_permille;
 
   TIM1->CCMR1 &= ~(TIM_CCMR1_OC1M | TIM_CCMR1_CC1S);
   TIM1->CCMR1 |= (6U << 4) | TIM_CCMR1_OC1PE;
@@ -1445,7 +1460,8 @@ void BoardTest_PwmInit(void) {
   TIM1->EGR = TIM_EGR_UG;
   TIM1->CR1 |= TIM_CR1_CEN;
 
-  spindle_pwm_permille = 0;
+  spindle_pwm_requested_permille = 0U;
+  spindle_pwm_permille = spindle_pwm_minimum_permille;
 }
 
 void BoardTest_UsbPullupInit(void) {

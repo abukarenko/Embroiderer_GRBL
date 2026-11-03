@@ -28,6 +28,7 @@
 #ifndef defaults_h
 
 #define DEFAULT_PROBE_RESUME_ENABLE 0 // $7: keep PROBE in its standard role.
+#define DEFAULT_SPINDLE_PWM_MIN_PERCENT 50 // $8: sewing motor stop level.
 
 #ifdef DEFAULTS_GENERIC
   // Grbl generic default settings. Should work across different machines.

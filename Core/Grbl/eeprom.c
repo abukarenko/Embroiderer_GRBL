@@ -112,6 +112,8 @@ void eeprom_init()
   memcpy(EE_Buffer, (const void *)GRBL_EEPROM_FLASH_ADDRESS,
          sizeof(EE_Buffer));
   if ((EE_Buffer[0] != SETTINGS_VERSION) &&
+      (EE_Buffer[0] != SETTINGS_VERSION_LEGACY_PROBE_RESUME) &&
+      (EE_Buffer[0] != SETTINGS_VERSION_LEGACY_4_AXIS) &&
       (EE_Buffer[0] != SETTINGS_VERSION_LEGACY_3_AXIS)) {
     memset(EE_Buffer, 0xFF, sizeof(EE_Buffer));
   }

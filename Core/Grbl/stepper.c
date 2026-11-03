@@ -518,6 +518,7 @@ void Timer1Proc()
 #ifndef ADAPTIVE_MULTI_AXIS_STEP_SMOOTHING        
 	  TIM2->PSC = st.exec_segment->prescaler;
 #endif
+#endif
 #ifdef GRBL_STM32_HAL
       grbl_platform_step_timer_start(st.exec_segment->cycles_per_tick,
 #ifndef ADAPTIVE_MULTI_AXIS_STEP_SMOOTHING
@@ -526,7 +527,6 @@ void Timer1Proc()
                                      0U
 #endif
       );
-#endif
 #endif
       st.step_count = st.exec_segment->n_step; // NOTE: Can sometimes be zero when moving slow.
       // If the new segment starts a new planner block, initialize stepper variables and counters.

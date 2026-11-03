@@ -69,10 +69,51 @@ typedef struct {
   float homing_pulloff;
 } settings_v11_t;
 
+typedef struct {
+  float steps_per_mm[N_AXIS];
+  float max_rate[N_AXIS];
+  float acceleration[N_AXIS];
+  float max_travel[N_AXIS];
+  uint8_t pulse_microseconds;
+  uint8_t step_invert_mask;
+  uint8_t dir_invert_mask;
+  uint8_t stepper_idle_lock_time;
+  uint8_t status_report_mask;
+  float junction_deviation;
+  float arc_tolerance;
+  float rpm_max;
+  float rpm_min;
+  uint8_t flags;
+  uint8_t homing_dir_mask;
+  float homing_feed_rate;
+  float homing_seek_rate;
+  uint16_t homing_debounce_delay;
+  float homing_pulloff;
+  uint8_t probe_resume_enable;
+} settings_v12_t;
+
 _Static_assert(sizeof(settings_v10_t) == 92U,
                "Unexpected legacy settings layout");
 _Static_assert(sizeof(settings_v11_t) == 108U,
                "Unexpected v11 settings layout");
+_Static_assert(sizeof(settings_v12_t) == 112U,
+               "Unexpected v12 settings layout");
+
+static uint8_t settings_migrate_v12(void)
+{
+  settings_v12_t old;
+
+  if (!memcpy_from_eeprom_with_checksum((char *)&old, EEPROM_ADDR_GLOBAL,
+                                        sizeof(old))) {
+    return false;
+  }
+
+  memset(&settings, 0, sizeof(settings));
+  memcpy(&settings, &old, sizeof(old));
+  settings.spindle_pwm_min_percent = DEFAULT_SPINDLE_PWM_MIN_PERCENT;
+  write_global_settings();
+  return true;
+}
 
 static uint8_t settings_migrate_v11(void)
 {
@@ -203,6 +244,7 @@ void settings_restore(uint8_t restore_flag) {
     settings.junction_deviation = DEFAULT_JUNCTION_DEVIATION;
     settings.arc_tolerance = DEFAULT_ARC_TOLERANCE;
     settings.probe_resume_enable = DEFAULT_PROBE_RESUME_ENABLE;
+    settings.spindle_pwm_min_percent = DEFAULT_SPINDLE_PWM_MIN_PERCENT;
 
     settings.rpm_max = DEFAULT_SPINDLE_RPM_MAX;
     settings.rpm_min = DEFAULT_SPINDLE_RPM_MIN;
@@ -393,6 +435,13 @@ uint8_t settings_store_global_setting(uint8_t parameter, float value) {
         if (int_value > 1U) { return(STATUS_INVALID_STATEMENT); }
         settings.probe_resume_enable = int_value;
         break;
+      case 8:
+        if (value > 100.0f) { return(STATUS_INVALID_STATEMENT); }
+        settings.spindle_pwm_min_percent = int_value;
+#ifdef GRBL_STM32_HAL
+        grbl_platform_spindle_set_minimum_percent(int_value);
+#endif
+        break;
       case 10: settings.status_report_mask = int_value; break;
       case 11: settings.junction_deviation = value; break;
       case 12: settings.arc_tolerance = value; break;
@@ -445,6 +494,10 @@ uint8_t settings_store_global_setting(uint8_t parameter, float value) {
 
 // Initialize the config subsystem
 void settings_init() {
+  if ((eeprom_get_char(0) == SETTINGS_VERSION_LEGACY_PROBE_RESUME) &&
+      settings_migrate_v12()) {
+    return;
+  }
   if ((eeprom_get_char(0) == SETTINGS_VERSION_LEGACY_4_AXIS) &&
       settings_migrate_v11()) {
     return;

@@ -23,6 +23,7 @@ void grbl_platform_spindle_init(void);
 void grbl_platform_spindle_set_enable(uint8_t enabled);
 void grbl_platform_spindle_set_direction(uint8_t ccw);
 void grbl_platform_spindle_set_pwm(uint16_t pwm);
+void grbl_platform_spindle_set_minimum_percent(uint8_t percent);
 uint8_t grbl_platform_spindle_get_enable(void);
 uint8_t grbl_platform_spindle_get_direction(void);
 
