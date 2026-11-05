@@ -45,6 +45,7 @@ static void protocol_execute_touch_action()
     return;
   }
   if (action != BOARD_TOUCH_ACTION_SPINDLE_TOGGLE) { return; }
+  if (embroidery_accessory_busy()) { return; }
   if (sys.suspend) {
     if (sys.state == STATE_HOLD) {
       system_set_exec_accessory_override_flag(EXEC_SPINDLE_OVR_STOP);

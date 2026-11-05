@@ -6,6 +6,14 @@
 
 void grbl_platform_init(void);
 void grbl_platform_task(void);
+uint8_t embroidery_needle_down(void);
+uint8_t embroidery_hold_status(void);
+uint8_t embroidery_accessory_busy(void);
+uint8_t embroidery_wait_stitch(void);
+void embroidery_stitch_complete(void);
+uint8_t embroidery_finish_stitch(void);
+uint16_t embroidery_speed_for_distance_squared(float distance_squared);
+void embroidery_trim(void);
 
 void grbl_platform_stepper_init(void);
 void grbl_platform_stepper_enable(uint8_t disable);

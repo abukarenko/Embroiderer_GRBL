@@ -432,11 +432,11 @@ uint8_t settings_store_global_setting(uint8_t parameter, float value) {
         probe_configure_invert_mask(false);
         break;
       case 7:
-        if (int_value > 1U) { return(STATUS_INVALID_STATEMENT); }
+        if (value != 0.0f) { return(STATUS_INVALID_STATEMENT); }
         settings.probe_resume_enable = int_value;
         break;
       case 8:
-        if (value > 100.0f) { return(STATUS_INVALID_STATEMENT); }
+        if (value != 50.0f) { return(STATUS_INVALID_STATEMENT); }
         settings.spindle_pwm_min_percent = int_value;
 #ifdef GRBL_STM32_HAL
         grbl_platform_spindle_set_minimum_percent(int_value);
@@ -476,6 +476,7 @@ uint8_t settings_store_global_setting(uint8_t parameter, float value) {
       case 30: settings.rpm_max = value; spindle_init(); break; // Re-initialize spindle rpm calibration
       case 31: settings.rpm_min = value; spindle_init(); break; // Re-initialize spindle rpm calibration
       case 32:
+        if (value != 0.0f) { return(STATUS_INVALID_STATEMENT); }
         #ifdef VARIABLE_SPINDLE
           if (int_value) { settings.flags |= BITFLAG_LASER_MODE; }
           else { settings.flags &= ~BITFLAG_LASER_MODE; }

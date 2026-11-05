@@ -247,11 +247,12 @@ uint8_t gc_execute_line(char *line)
         // Determine 'M' command and its modal group
         if (mantissa > 0) { FAIL(STATUS_GCODE_COMMAND_VALUE_NOT_INTEGER); } // [No Mxx.x commands]
         switch(int_value) {
-          case 0: case 1: case 2: case 30:
+          case 0: case 1: case 2: case 6: case 30:
             word_bit = MODAL_GROUP_M4;
             switch(int_value) {
               case 0: gc_block.modal.program_flow = PROGRAM_FLOW_PAUSED; break; // Program pause
               case 1: break; // Optional stop not supported. Ignore.
+              case 6: gc_block.modal.program_flow = 6; break;
               default: gc_block.modal.program_flow = int_value; // Program end and reset
             }
             break;
@@ -337,6 +338,18 @@ uint8_t gc_execute_line(char *line)
     }
   }
   // Parsing complete!
+  /* Needle synchronization is defined only for XY linear stitches. */
+  if ((axis_words & (bit(Z_AXIS) | bit(A_AXIS))) ||
+      gc_block.modal.motion == MOTION_MODE_CW_ARC ||
+      gc_block.modal.motion == MOTION_MODE_CCW_ARC ||
+      gc_block.modal.motion == MOTION_MODE_PROBE_TOWARD ||
+      gc_block.modal.motion == MOTION_MODE_PROBE_TOWARD_NO_ERROR ||
+      gc_block.modal.motion == MOTION_MODE_PROBE_AWAY ||
+      gc_block.modal.motion == MOTION_MODE_PROBE_AWAY_NO_ERROR ||
+      gc_block.modal.spindle == SPINDLE_ENABLE_CCW ||
+      (gc_block.modal.program_flow == 6 && axis_words)) {
+    FAIL(STATUS_GCODE_UNSUPPORTED_COMMAND);
+  }
 
 
   /* -------------------------------------------------------------------------------------
@@ -1094,6 +1107,17 @@ uint8_t gc_execute_line(char *line)
   gc_state.modal.program_flow = gc_block.modal.program_flow;
   if (gc_state.modal.program_flow) {
     protocol_buffer_synchronize(); // Sync and finish all remaining buffered motions before moving on.
+    if (gc_state.modal.program_flow == 6 ||
+        gc_state.modal.program_flow == PROGRAM_FLOW_COMPLETED_M30) {
+      embroidery_trim();
+      if (sys.abort) { return STATUS_OK; }
+      gc_state.modal.spindle = gc_block.modal.spindle = SPINDLE_DISABLE;
+      sys.spindle_speed = 0.0f;
+      if (gc_state.modal.program_flow == 6) {
+        gc_state.modal.program_flow = PROGRAM_FLOW_PAUSED;
+        printPgmString(PSTR("[MSG:Change thread, then Cycle Start]\r\n"));
+      }
+    }
     if (gc_state.modal.program_flow == PROGRAM_FLOW_PAUSED) {
       if (sys.state != STATE_CHECK_MODE) {
         system_set_exec_state_flag(EXEC_FEED_HOLD); // Use feed hold for program pause.

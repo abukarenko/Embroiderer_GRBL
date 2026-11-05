@@ -1,5 +1,8 @@
 Debug/
 Release/
+build/
+build-*.log
+__pycache__/
 .metadata/
 .settings/
 *.launch

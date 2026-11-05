@@ -1,0 +1,13 @@
+(Vyshivatel bench example: verify signals before connecting mechanics)
+G21 G90 G94
+M5
+G0 X0 Y0
+M3 S650
+G1 X1 Y0 F1000
+G1 X1 Y1 F1000
+G1 X0 Y1 F1000
+M6
+(Change thread and send Cycle Start)
+M3 S650
+G1 X0 Y0 F1000
+M30

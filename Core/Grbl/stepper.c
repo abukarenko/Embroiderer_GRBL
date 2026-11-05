@@ -435,6 +435,9 @@ void Timer1Proc()
 #ifdef GRBL_STM32_HAL
   if ((TIM2->SR & TIM_SR_UIF) == 0U) { return; }
   TIM2->SR &= ~TIM_SR_UIF;
+  /* Freeze before emitting a pulse OR advancing Bresenham/segment counters.
+     TIM3 still finishes any pulse that was already active. */
+  if (embroidery_needle_down()) { return; }
 #endif
 
   if (busy) { return; } // The busy-flag is used to avoid reentering this interrupt

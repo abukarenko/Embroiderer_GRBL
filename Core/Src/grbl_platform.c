@@ -3,61 +3,119 @@
 #include "grbl.h"
 
 static uint32_t grbl_display_sample_tick;
+static uint8_t embroidery_waiting;
+static uint8_t embroidery_armed;
+static uint8_t embroidery_permit;
+static volatile uint8_t embroidery_between_stitches;
+static volatile uint8_t embroidery_trimming;
+static uint32_t embroidery_trim_started;
 
-#define PROBE_RESUME_DEBOUNCE_MS 30U
-
-static uint8_t probe_resume_armed;
-static uint8_t probe_resume_debouncing;
-static uint32_t probe_resume_debounce_tick;
-
-static void grbl_platform_probe_resume_task(void)
+uint16_t embroidery_speed_for_distance_squared(float distance_squared)
 {
-  uint8_t active;
-  uint8_t m0_hold;
+  return embroidery_speed_pwm(distance_squared);
+}
 
-  if (!settings.probe_resume_enable) {
-    probe_resume_armed = 0U;
-    probe_resume_debouncing = 0U;
+uint8_t embroidery_needle_down(void)
+{
+  /* Logical active means needle in fabric. Preserve GRBL's $6 inversion
+     so an optocoupler's polarity can be calibrated without rebuilding. */
+  return probe_get_state();
+}
+
+uint8_t embroidery_hold_status(void)
+{
+  return ((sys.state == STATE_IDLE) &&
+          (embroidery_waiting || embroidery_between_stitches)) ||
+         (((sys.state == STATE_CYCLE) || (sys.state == STATE_JOG)) &&
+          embroidery_needle_down());
+}
+
+uint8_t embroidery_accessory_busy(void)
+{
+  return embroidery_waiting || embroidery_trimming;
+}
+
+static void embroidery_sensor_task(void)
+{
+  if (embroidery_trimming &&
+      ((uint32_t)(HAL_GetTick() - embroidery_trim_started) >= EMBROIDERY_TRIM_MS ||
+       sys.state != STATE_IDLE || sys.abort)) {
+    grbl_platform_spindle_set_pwm(0U);
+    grbl_platform_spindle_set_enable(0U);
+  }
+  /* Never use needle cycles to release an operator's Feed Hold/M0. */
+  if (!embroidery_waiting || sys.state != STATE_IDLE || sys.suspend) {
+    embroidery_armed = 0U;
     return;
   }
+  if (embroidery_needle_down()) { embroidery_armed = 1U; }
+  else if (embroidery_armed) {
+    embroidery_permit = 1U;
+    embroidery_armed = 0U;
+  }
+}
 
-  active = probe_get_state();
-  m0_hold = (sys.state == STATE_HOLD) &&
-            (gc_state.modal.program_flow == PROGRAM_FLOW_PAUSED) &&
-            (sys.suspend & SUSPEND_HOLD_COMPLETE);
+uint8_t embroidery_wait_stitch(void)
+{
+  embroidery_waiting = 1U;
+  embroidery_armed = 0U;
+  embroidery_permit = 0U;
+  while (!embroidery_permit) {
+    protocol_execute_realtime();
+    if (sys.abort) { embroidery_waiting = 0U; return 0U; }
+  }
+  embroidery_waiting = 0U;
+  embroidery_between_stitches = 0U;
+  return 1U;
+}
 
-  if (!m0_hold) {
-    probe_resume_armed = 0U;
-    probe_resume_debouncing = 0U;
+void embroidery_stitch_complete(void)
+{
+  embroidery_between_stitches = 1U;
+}
+
+uint8_t embroidery_finish_stitch(void)
+{
+  if (embroidery_between_stitches && grbl_platform_spindle_get_enable()) {
+    return embroidery_wait_stitch();
+  }
+  return !sys.abort;
+}
+
+void embroidery_trim(void)
+{
+  uint32_t started;
+  if (sys.state == STATE_CHECK_MODE || sys.abort) { return; }
+  protocol_buffer_synchronize();
+  if (sys.abort) { return; }
+  /* The last XY move precedes its needle penetration. Let that needle
+     cycle finish before requesting thread trim. */
+  if (!embroidery_finish_stitch()) { return; }
+  spindle_stop();
+  uint32_t primask = __get_PRIMASK();
+  __disable_irq();
+  if (sys.abort || (sys_rt_exec_state & EXEC_RESET)) {
+    if (!primask) { __enable_irq(); }
     return;
   }
-
-  /* Require release after entering HOLD. A permanently active input must not
-     immediately resume a newly reached M0 pause. */
-  if (!active) {
-    probe_resume_armed = 1U;
-    probe_resume_debouncing = 0U;
-    return;
+  embroidery_trim_started = HAL_GetTick();
+  embroidery_trimming = 1U;
+  BoardTest_SetSpindlePwmMinimum(0U);
+  BoardTest_SetSpindlePwm(EMBROIDERY_TRIM_PWM);
+  if (!primask) { __enable_irq(); }
+  started = embroidery_trim_started;
+  while ((uint32_t)(HAL_GetTick() - started) < EMBROIDERY_TRIM_MS) {
+    protocol_execute_realtime();
+    if (sys.abort || !embroidery_trimming) { break; }
   }
-
-  if (!probe_resume_armed) { return; }
-
-  if (!probe_resume_debouncing) {
-    probe_resume_debouncing = 1U;
-    probe_resume_debounce_tick = HAL_GetTick();
-    return;
-  }
-
-  if ((uint32_t)(HAL_GetTick() - probe_resume_debounce_tick) >=
-      PROBE_RESUME_DEBOUNCE_MS) {
-    probe_resume_armed = 0U;
-    probe_resume_debouncing = 0U;
-    system_set_exec_state_flag(EXEC_CYCLE_START);
-  }
+  embroidery_trimming = 0U;
+  grbl_platform_spindle_set_pwm(0U);
+  grbl_platform_spindle_set_enable(0U);
 }
 
 static const char *grbl_state_text(uint8_t state)
 {
+  if (embroidery_hold_status()) { return "HOLD"; }
   if (state & STATE_ALARM) { return "ALARM"; }
   if (state & STATE_HOMING) { return "HOME"; }
   if (state & STATE_CYCLE) { return "RUN"; }
@@ -98,7 +156,7 @@ void grbl_platform_task(void)
 {
   uint32_t now = HAL_GetTick();
 
-  grbl_platform_probe_resume_task();
+  embroidery_sensor_task();
 
   if ((uint32_t)(now - grbl_display_sample_tick) >= 1000U) {
     grbl_display_sample_tick = now;
@@ -229,6 +287,8 @@ uint8_t grbl_platform_control_state(void)
 
 void grbl_platform_spindle_init(void)
 {
+  embroidery_waiting = embroidery_armed = embroidery_permit = 0U;
+  embroidery_between_stitches = embroidery_trimming = 0U;
   grbl_platform_spindle_set_minimum_percent(settings.spindle_pwm_min_percent);
   BoardTest_SetSpindlePwm(SPINDLE_PWM_OFF_VALUE);
   grbl_platform_spindle_set_enable(0U);
@@ -247,13 +307,21 @@ void grbl_platform_spindle_set_direction(uint8_t ccw)
 
 void grbl_platform_spindle_set_pwm(uint16_t pwm)
 {
+  /* A stop/reset always exits trim and restores neutral, even from an ISR. */
+  if (pwm == 0U) {
+    embroidery_trimming = 0U;
+    embroidery_between_stitches = 0U;
+    pwm = EMBROIDERY_NEUTRAL_PWM;
+  }
+  BoardTest_SetSpindlePwmMinimum(EMBROIDERY_NEUTRAL_PWM);
+  if (pwm > 860U) { pwm = 860U; }
   BoardTest_SetSpindlePwm(pwm);
 }
 
 void grbl_platform_spindle_set_minimum_percent(uint8_t percent)
 {
-  if (percent > 100U) { percent = 100U; }
-  BoardTest_SetSpindlePwmMinimum((uint16_t)percent * 10U);
+  (void)percent;
+  BoardTest_SetSpindlePwmMinimum(EMBROIDERY_NEUTRAL_PWM);
 }
 
 uint8_t grbl_platform_spindle_get_enable(void)

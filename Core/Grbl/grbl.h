@@ -25,7 +25,7 @@
 
 // Grbl versioning system
 #define GRBL_VERSION "1.1f"
-#define GRBL_VERSION_BUILD "20170801"
+#define GRBL_VERSION_BUILD "20261105-vyshivatel-0.1"
 
 #if !defined(STM32F103C8) && !defined(WIN32) && !defined(GRBL_STM32_HAL)
 #define AVRTARGET
@@ -96,6 +96,7 @@ typedef int bool;
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include "embroidery.h"
 
 // Define the Grbl system include files. NOTE: Do not alter organization.
 #include "config.h"

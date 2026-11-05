@@ -252,10 +252,23 @@ void spindle_stop()
 	}
 
 
-  #ifdef ENABLE_PIECEWISE_LINEAR_SPINDLE
+#ifdef GRBL_STM32_HAL
+  SPINDLE_PWM_TYPE spindle_compute_pwm_value(float rpm)
+  {
+
+    rpm *= 0.010f * sys.spindle_speed_ovr;
+    if (rpm <= 0.0f) { sys.spindle_speed = 0.0f; return 0U; }
+    if (rpm < 580.0f) { rpm = 580.0f; }
+    if (rpm > 860.0f) { rpm = 860.0f; }
+    sys.spindle_speed = rpm;
+    return (SPINDLE_PWM_TYPE)rpm;
+
+  }
+#elif defined(ENABLE_PIECEWISE_LINEAR_SPINDLE)
 	// Called by spindle_set_state() and step segment generator. Keep routine small and efficient.
 	SPINDLE_PWM_TYPE spindle_compute_pwm_value(float rpm) // 328p PWM register is 8-bit.
 	{
+
 		SPINDLE_PWM_TYPE pwm_value;
 		rpm *= (0.010*sys.spindle_speed_ovr); // Scale by spindle speed override value.
 																					// Calculate PWM register value based on rpm max/min settings and programmed rpm.

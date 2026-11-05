@@ -472,7 +472,9 @@ void report_realtime_status()
 
   // Report current machine state and sub-states
   serial_write('<');
-  switch (sys.state) {
+  if (embroidery_hold_status()) {
+    printPgmString(PSTR("Hold:0"));
+  } else switch (sys.state) {
   case STATE_IDLE: printPgmString(PSTR("Idle")); break;
   case STATE_CYCLE: printPgmString(PSTR("Run")); break;
   case STATE_HOLD:

@@ -41,6 +41,34 @@ void mc_line(float *target, plan_line_data_t *pl_data)
   // If in check gcode mode, prevent motion by blocking planner. Soft limits still work.
   if (sys.state == STATE_CHECK_MODE) { return; }
 
+  /* Fully finish each line before accepting another stitch. */
+  uint8_t jog = (pl_data->condition & PL_COND_FLAG_NO_FEED_OVERRIDE) != 0U;
+  uint8_t stitch = !jog &&
+    !(pl_data->condition & PL_COND_FLAG_RAPID_MOTION) &&
+    (pl_data->condition & (PL_COND_FLAG_SPINDLE_CW | PL_COND_FLAG_SPINDLE_CCW));
+  if (!jog) { protocol_buffer_synchronize(); }
+  if (sys.abort) { return; }
+  if (jog || (pl_data->condition & PL_COND_FLAG_RAPID_MOTION)) {
+    if (!embroidery_finish_stitch()) { return; }
+    spindle_stop();
+    pl_data->condition &= ~(PL_COND_FLAG_SPINDLE_CW | PL_COND_FLAG_SPINDLE_CCW);
+    pl_data->spindle_speed = 0.0f;
+  }
+  if (stitch) {
+    int32_t x = lroundf(target[X_AXIS] * settings.steps_per_mm[X_AXIS]);
+    int32_t y = lroundf(target[Y_AXIS] * settings.steps_per_mm[Y_AXIS]);
+    if (x == sys_position[X_AXIS] && y == sys_position[Y_AXIS]) { return; }
+#if EMBROIDERY_AUTO_SPEED
+    float actual[N_AXIS];
+    system_convert_array_steps_to_mpos(actual, sys_position);
+    float dx = target[X_AXIS] - actual[X_AXIS];
+    float dy = target[Y_AXIS] - actual[Y_AXIS];
+    pl_data->spindle_speed = embroidery_speed_for_distance_squared(dx*dx + dy*dy);
+#endif
+    spindle_set_state(SPINDLE_ENABLE_CW, pl_data->spindle_speed);
+    if (!embroidery_wait_stitch()) { return; }
+  }
+
   // NOTE: Backlash compensation may be installed here. It will need direction info to track when
   // to insert a backlash line motion(s) before the intended line motion and will require its own
   // plan_check_full_buffer() and check for system abort loop. Also for position reporting
@@ -74,6 +102,8 @@ void mc_line(float *target, plan_line_data_t *pl_data)
 			}
 		}
 	}
+  if (!jog) { protocol_buffer_synchronize(); }
+  if (stitch && !sys.abort) { embroidery_stitch_complete(); }
 }
 
 
@@ -218,6 +248,7 @@ void mc_dwell(float seconds)
 // executing the homing cycle. This prevents incorrect buffered plans after homing.
 void mc_homing_cycle(uint8_t cycle_mask)
 {
+  spindle_stop();
   // Check and abort homing cycle, if hard limits are already enabled. Helps prevent problems
   // with machines with limits wired on both ends of travel to one limit pin.
   // TODO: Move the pin-specific LIMIT_PIN call to limits.c as a function.

@@ -23,6 +23,10 @@ void Grbl_Run(void)
   eeprom_init();
   serial_init();
   settings_init();
+  /* Preserve motion calibration while overriding CNC-only pedal settings. */
+  settings.spindle_pwm_min_percent = 50U;
+  settings.probe_resume_enable = 0U;
+  settings.flags &= ~BITFLAG_LASER_MODE;
   stepper_init();
   system_init();
 
