@@ -25,7 +25,7 @@
 
 // Grbl versioning system
 #define GRBL_VERSION "1.1f"
-#define GRBL_VERSION_BUILD "20261105-vyshivatel-0.1"
+#define GRBL_VERSION_BUILD "20261111-embroiderer-0.2.0"
 
 #if !defined(STM32F103C8) && !defined(WIN32) && !defined(GRBL_STM32_HAL)
 #define AVRTARGET

@@ -9,7 +9,7 @@ import struct
 import sys
 import unittest
 from elftools.elf.elffile import ELFFile
-from unicorn import Uc, UC_ARCH_ARM, UC_MODE_THUMB, UC_MODE_MCLASS, UC_HOOK_CODE
+from unicorn import Uc, UC_ARCH_ARM, UC_MODE_THUMB, UC_MODE_MCLASS, UC_HOOK_CODE, UC_HOOK_MEM_WRITE
 from unicorn.arm_const import UC_ARM_REG_SP, UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_R0, UC_ARM_REG_R1
 
 ELF = pathlib.Path(sys.argv.pop(1)) if len(sys.argv) > 1 else pathlib.Path(__file__).parents[1] / 'build/manual/Vyshivatel.elf'
@@ -34,7 +34,19 @@ class Board:
         self.pwm_history = []
         self.planned = []
         self.mock_planner = False
+        self.output_history = []
+        self.feedback = []
         self.uc.hook_add(UC_HOOK_CODE, self.hook)
+        self.uc.hook_add(UC_HOOK_MEM_WRITE, self.mmio_write)
+
+    def mmio_write(self, uc, access, address, size, value, data):
+        if address == 0x40012C34:
+            self.output_history.append(value)
+        for port in [0x40010800, 0x40010C00, 0x40011000]:
+            if address == port + 0x10:  # GPIO BSRR drives ODR and pin IDR
+                for offset in [8, 12]:
+                    old = self.get32(port + offset)
+                    self.put32(port + offset, (old | (value & 0xffff)) & ~(value >> 16))
 
     def write(self, name, value):
         self.uc.mem_write(self.symbols[name], bytes([value]))
@@ -61,6 +73,14 @@ class Board:
         if at('HAL_GetTick'):
             self.ret(self.tick)
         elif any(at(n) for n in ['BoardTest_Task', 'grbl_serial_flush', 'grbl_platform_update_display']):
+            self.ret()
+        elif at('settings_read_coord_data'):
+            uc.mem_write(uc.reg_read(UC_ARM_REG_R1), bytes(16))
+            self.ret(1)
+        elif at('serial_write'):
+            self.ret()
+        elif at('report_feedback_message'):
+            self.feedback.append(uc.reg_read(UC_ARM_REG_R0))
             self.ret()
         elif at('protocol_buffer_synchronize'):
             self.ret()
@@ -146,11 +166,11 @@ class FirmwareTests(unittest.TestCase):
         self.assertEqual(b.get32(0x40010C10), 0)  # No X step write
         self.assertEqual(b.get32(0x40011010), 0)  # No Y step write
 
-    def test_trim_is_400_for_one_second_then_neutral(self):
+    def test_trim_is_200_for_one_second_then_neutral(self):
         b = self.b
         b.call('embroidery_trim')
         self.assertEqual(b.tick, 1000)
-        self.assertTrue(all(pwm == 400 for pwm in b.pwm_history))
+        self.assertTrue(all(pwm == 200 for pwm in b.pwm_history))
         self.assertEqual(b.get32(0x40012C34), 500)
 
     def test_reset_during_trim_restores_neutral(self):
@@ -197,7 +217,8 @@ class FirmwareTests(unittest.TestCase):
             bits = struct.unpack('<I', struct.pack('<f', float(distance * distance)))[0]
             values.append(b.call('embroidery_speed_for_distance_squared', bits))
         self.assertEqual(values[:2], [860, 860])
-        self.assertEqual(values[-2:], [650, 650])
+        self.assertEqual(values[4:], [740, 740, 740, 740])
+        self.assertEqual(values[3], 818)  # 5 mm, interpolation against squared length
         self.assertEqual(values, sorted(values, reverse=True))
 
     def test_final_stitch_cycle_precedes_trim(self):
@@ -207,7 +228,7 @@ class FirmwareTests(unittest.TestCase):
         b.events = [level(0), level(1), level(0)]
         b.call('embroidery_trim')
         self.assertEqual(b.polls, 103)
-        self.assertTrue(all(pwm == 400 for pwm in b.pwm_history[3:]))
+        self.assertTrue(all(pwm == 200 for pwm in b.pwm_history[3:]))
         self.assertEqual(b.get32(0x40012C34), 500)
 
     def motion(self, condition, speed=650):
@@ -242,6 +263,86 @@ class FirmwareTests(unittest.TestCase):
         self.assertEqual(len(b.planned), 1)
         self.assertEqual(b.planned[0][1][8] & 48, 0)
         self.assertEqual(b.get32(0x40012C34), 500)
+
+    def actual_motion_setup(self):
+        b = self.b
+        b.uc.mem_write(b.symbols['settings'], struct.pack('<16f',
+            *([100.0]*4 + [1000.0]*4 + [360000.0]*4 + [-200.0]*4)))
+        b.uc.mem_write(b.symbols['settings'] + 64, bytes([10, 0, 0, 255, 1]))
+        b.uc.mem_write(b.symbols['settings'] + 72, struct.pack('<2f', 0.01, 0.002))
+        b.uc.mem_write(b.symbols['sys'] + 7, bytes([100, 100, 100]))
+        b.call('plan_reset')
+        b.call('st_reset')
+        b.needle(0)
+
+    def actual_motion(self, pwm, x=0.1, y=0.2):
+        b = self.b
+        b.write('sys', 8)
+        b.uc.mem_write(0x2000D000, struct.pack('<4f', x, y, 0, 0))
+        b.uc.mem_write(0x2000D100, struct.pack('<ffB3x', 1000, pwm, 16))
+        self.assertEqual(b.call('plan_buffer_line', 0x2000D000, 0x2000D100), 1)
+        b.call('spindle_set_speed', pwm)
+        b.output_history.clear()
+        b.write('sys_rt_exec_state', 0)
+        for tick in range(5000):
+            b.call('st_prep_buffer')
+            b.put32(0x40000010, 1)
+            b.call('TIM2_IRQHandler')
+            b.put32(0x40000410, 1)
+            b.call('TIM3_IRQHandler')
+            if b.read('sys_rt_exec_state')[0] & 4:
+                break
+        else:
+            self.fail('Actual stepper block did not finish')
+        b.write('sys', 0)
+        self.assertTrue(b.output_history, 'Actual ISR never wrote spindle PWM')
+        self.assertTrue(all(value == pwm for value in b.output_history), b.output_history[:20])
+        self.assertEqual(b.get32(0x40012C34), pwm)
+        self.assertEqual(struct.unpack('<4i', b.read('sys_position')), (round(x*100), round(y*100), 0, 0))
+
+    def test_actual_segment_pipeline_preserves_pwm_over_255(self):
+        for pwm in [650, 740, 768, 860]:
+            with self.subTest(pwm=pwm):
+                self.b = Board()
+                self.actual_motion_setup()
+                self.actual_motion(pwm)
+
+    def test_completed_block_and_next_needle_wait_keep_motor_running(self):
+        self.actual_motion_setup()
+        self.actual_motion(740)
+        b = self.b
+        b.call('embroidery_stitch_complete')
+        b.events = [level(0), level(1), level(0)]
+        b.call('embroidery_wait_stitch')
+        self.assertEqual(b.get32(0x40012C34), 740)
+        self.assertTrue(all(value == 740 for value in b.output_history))
+        self.actual_motion(740, x=0.2, y=0.4)
+
+    def test_m30_after_actual_last_block_trims_and_returns(self):
+        self.actual_motion_setup()
+        self.actual_motion(740)
+        b = self.b
+        b.call('embroidery_stitch_complete')
+        b.events = [level(0), level(1), level(0)]
+        b.uc.mem_write(0x2000E000, b'M30\0')
+        self.assertEqual(b.call('gc_execute_line', 0x2000E000), 0)
+        self.assertIn(200, b.output_history)
+        self.assertEqual(b.get32(0x40012C34), 500)
+        self.assertEqual(b.call('grbl_platform_spindle_get_enable'), 0)
+        self.assertFalse(b.call('embroidery_hold_status'))
+        self.assertIn(8, b.feedback, 'Program end feedback missing')
+
+    def test_m6_after_actual_last_block_trims_and_requests_operator_pause(self):
+        self.actual_motion_setup()
+        self.actual_motion(740)
+        b = self.b
+        b.call('embroidery_stitch_complete')
+        b.events = [level(0), level(1), level(0)]
+        b.uc.mem_write(0x2000E000, b'M6\0')
+        self.assertEqual(b.call('gc_execute_line', 0x2000E000), 0)
+        self.assertIn(200, b.output_history)
+        self.assertEqual(b.get32(0x40012C34), 500)
+        self.assertTrue(b.read('sys_rt_exec_state')[0] & 8, 'M6 must request Feed Hold')
 
 
 if __name__ == '__main__':
