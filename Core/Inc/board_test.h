@@ -22,6 +22,7 @@ void BoardTest_UsbConnect(void);
 void BoardTest_PwmInit(void);
 void BoardTest_SetSpindlePwm(uint16_t permille);
 void BoardTest_SetSpindlePwmMinimum(uint16_t permille);
+void BoardTest_SetSpindlePwmNeutral(uint16_t permille);
 void BoardTest_IdcInit(void);
 void BoardTest_SetGrblStatus(const float machine_position[4],
                              float spindle_speed, uint8_t limit_state,

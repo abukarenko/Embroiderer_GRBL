@@ -10,7 +10,7 @@ import sys
 import unittest
 from elftools.elf.elffile import ELFFile
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_THUMB, UC_MODE_MCLASS, UC_HOOK_CODE, UC_HOOK_MEM_WRITE
-from unicorn.arm_const import UC_ARM_REG_SP, UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_R0, UC_ARM_REG_R1
+from unicorn.arm_const import UC_ARM_REG_SP, UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2
 
 ELF = pathlib.Path(sys.argv.pop(1)) if len(sys.argv) > 1 else pathlib.Path(__file__).parents[1] / 'build/manual/Vyshivatel.elf'
 
@@ -36,8 +36,10 @@ class Board:
         self.mock_planner = False
         self.output_history = []
         self.feedback = []
+        self.serial = bytearray()
         self.uc.hook_add(UC_HOOK_CODE, self.hook)
         self.uc.hook_add(UC_HOOK_MEM_WRITE, self.mmio_write)
+        self.call('settings_restore', 1)
 
     def mmio_write(self, uc, access, address, size, value, data):
         if address == 0x40012C34:
@@ -78,6 +80,10 @@ class Board:
             uc.mem_write(uc.reg_read(UC_ARM_REG_R1), bytes(16))
             self.ret(1)
         elif at('serial_write'):
+            self.serial.append(uc.reg_read(UC_ARM_REG_R0) & 255)
+            self.ret()
+        elif at('eeprom_flush'):
+            uc.mem_write(0x0803F800, bytes(self.read('EE_Buffer')))
             self.ret()
         elif at('report_feedback_message'):
             self.feedback.append(uc.reg_read(UC_ARM_REG_R0))
@@ -98,17 +104,27 @@ class Board:
             # Substitute realtime service with the actual platform task.
             uc.reg_write(UC_ARM_REG_PC, self.symbols['grbl_platform_task'] | 1)
 
-    def call(self, name, value=0, second=0):
+    def call(self, name, value=0, second=0, third=0):
         self.uc.reg_write(UC_ARM_REG_SP, 0x2000F000)
         self.uc.reg_write(UC_ARM_REG_LR, 0x0803F001)
         self.uc.reg_write(UC_ARM_REG_R0, value)
         self.uc.reg_write(UC_ARM_REG_R1, second)
+        self.uc.reg_write(UC_ARM_REG_R2, third)
         self.uc.emu_start(self.symbols[name] | 1, 0x0803F000, count=2000000)
         self.assert_finished()
         return self.uc.reg_read(UC_ARM_REG_R0)
 
     def assert_finished(self):
         assert self.uc.reg_read(UC_ARM_REG_PC) == 0x0803F000, 'Instruction limit reached'
+
+    def command(self, text):
+        self.uc.mem_write(0x2000E000, text.encode('ascii') + b'\0')
+        return self.call('system_execute_line', 0x2000E000)
+
+    def reload_settings(self):
+        self.uc.mem_write(self.symbols['settings'], bytes(self.sizes['settings']))
+        self.call('eeprom_init')
+        self.call('settings_init')
 
 
 def level(down):
@@ -202,7 +218,7 @@ class FirmwareTests(unittest.TestCase):
     def test_s_value_and_override_are_bounded(self):
         b = self.b
         b.uc.mem_write(b.symbols['sys'] + 9, b'\x64')
-        for value, expected in [(0.0, 0), (1.0, 580), (650.0, 650), (1000.0, 860)]:
+        for value, expected in [(0.0, 0), (1.0, 0), (500.0, 0), (650.0, 650), (1000.0, 860)]:
             bits = struct.unpack('<I', struct.pack('<f', value))[0]
             self.assertEqual(b.call('spindle_compute_pwm_value', bits), expected)
         b.uc.mem_write(b.symbols['sys'] + 9, b'\xc8')
@@ -343,6 +359,128 @@ class FirmwareTests(unittest.TestCase):
         self.assertIn(200, b.output_history)
         self.assertEqual(b.get32(0x40012C34), 500)
         self.assertTrue(b.read('sys_rt_exec_state')[0] & 8, 'M6 must request Feed Hold')
+
+    def jack_profile(self):
+        b = self.b
+        for command in ['$33=6', '$34=34', '$35=54', '$36=88']:
+            self.assertEqual(b.command(command), 0, command)
+
+    def test_profile_settings_report_and_persist_after_reload(self):
+        b = self.b
+        self.jack_profile()
+        self.assertEqual(b.command('$33=6.3'), 0)
+        b.reload_settings()
+        b.serial.clear()
+        self.assertEqual(b.command('$$'), 0)
+        for line in [b'$33=6.3', b'$34=34.0', b'$35=54.0', b'$36=88.0']:
+            self.assertIn(line, b.serial)
+
+    def test_neutral_change_has_no_transient_old_pwm(self):
+        b = self.b
+        self.assertEqual(b.command('$33=6'), 0)
+        b.output_history.clear()
+        self.assertEqual(b.command('$34=34'), 0)
+        self.assertEqual(b.output_history, [340])
+        b.call('grbl_platform_spindle_set_pwm', 540)
+        b.call('spindle_stop')
+        self.assertEqual(b.get32(0x40012C34), 340)
+
+    def test_saved_neutral_used_at_first_pwm_start(self):
+        b = self.b
+        self.jack_profile()
+        self.assertEqual(b.call('settings_read_boot_neutral_pwm'), 340)
+        b.output_history.clear()
+        b.call('BoardTest_PwmInit')
+        self.assertEqual(b.output_history, [340])
+        self.assertEqual(b.get32(0x40012C34), 340)
+
+    def test_corrupt_boot_record_falls_back_to_default(self):
+        b = self.b
+        self.jack_profile()
+        b.uc.mem_write(0x0803F801, b'\xff')
+        self.assertEqual(b.call('settings_read_boot_neutral_pwm'), 500)
+
+    def test_jack_trim_and_stop_use_saved_profile(self):
+        b = self.b
+        self.jack_profile()
+        b.reload_settings()
+        b.call('grbl_platform_spindle_init')
+        b.pwm_history.clear()
+        b.call('embroidery_trim')
+        self.assertTrue(all(pwm == 60 for pwm in b.pwm_history))
+        self.assertEqual(b.get32(0x40012C34), 340)
+        b.call('spindle_set_speed', 540)
+        b.call('mc_reset')
+        self.assertEqual(b.get32(0x40012C34), 340)
+
+    def test_custom_auto_profile_after_reload(self):
+        b = self.b
+        if 'embroidery_speed_for_distance_squared' not in b.symbols:
+            self.skipTest('Automatic speed is not linked in manual variant')
+        self.jack_profile()
+        b.reload_settings()
+        for squared, expected in [(0,880), (4,880), (25,761), (64,540), (100,540)]:
+            bits = struct.unpack('<I', struct.pack('<f', float(squared)))[0]
+            self.assertEqual(b.call('embroidery_speed_for_distance_squared', bits), expected)
+
+    def test_manual_s_values_for_another_drive_are_not_clamped_to_580(self):
+        b = self.b
+        self.jack_profile()
+        b.uc.mem_write(b.symbols['sys'] + 9, b'\x64')
+        for value, expected in [(0,0), (340,0), (420,420), (540,540), (900,880)]:
+            bits = struct.unpack('<I', struct.pack('<f', float(value)))[0]
+            self.assertEqual(b.call('spindle_compute_pwm_value', bits), expected)
+
+    def test_another_drive_profile_through_actual_stepper_pipeline(self):
+        self.jack_profile()
+        self.actual_motion_setup()
+        self.actual_motion(540)
+        self.b.call('spindle_stop')
+        self.assertEqual(self.b.get32(0x40012C34), 340)
+
+    def test_invalid_profile_rejected_without_writing_eeprom(self):
+        b = self.b
+        saved = bytes(b.read('EE_Buffer'))
+        for command in ['$33=-1','$33=101','$33=50','$34=20','$34=74',
+                        '$35=50','$35=87','$36=73','$36=100.1']:
+            self.assertNotEqual(b.command(command), 0, command)
+            self.assertEqual(bytes(b.read('EE_Buffer')), saved)
+        for value in [float('nan'), float('inf')]:
+            bits = struct.unpack('<I', struct.pack('<f', value))[0]
+            self.assertNotEqual(b.call('settings_store_global_setting', 33, bits), 0)
+
+    def test_profile_changes_rejected_while_motor_enabled_or_held(self):
+        b = self.b
+        saved = bytes(b.read('EE_Buffer'))
+        b.call('grbl_platform_spindle_set_enable', 1)
+        self.assertNotEqual(b.command('$33=10'), 0)
+        b.call('grbl_platform_spindle_set_enable', 0)
+        b.call('embroidery_stitch_complete')
+        self.assertNotEqual(b.command('$33=10'), 0)
+        self.assertEqual(bytes(b.read('EE_Buffer')), saved)
+
+    def test_v13_migration_keeps_motion_and_coordinate_records(self):
+        b = self.b
+        old = bytearray(b.read('settings')[:112])
+        struct.pack_into('<4f', old, 0, 123.0, 456.0, 789.0, 321.0)
+        old[110:112] = b'\xa5\x5a'  # Old tail padding must not become a new setting.
+        checksum = 0
+        for value in old:
+            checksum = (((checksum << 1) | (checksum >> 7)) + value) & 255
+        image = bytearray(b'\xff' * 1024)
+        image[0] = 13
+        image[1:113] = old
+        image[113] = checksum
+        image[512:768] = bytes(range(256))
+        b.uc.mem_write(0x0803F800, bytes(image))
+        b.reload_settings()
+        self.assertEqual(bytes(b.read('settings')[:110]), bytes(old[:110]))
+        self.assertEqual(b.read('EE_Buffer')[0], 14)
+        self.assertEqual(bytes(b.read('EE_Buffer')[512:768]), bytes(range(256)))
+        b.serial.clear()
+        self.assertEqual(b.command('$$'), 0)
+        for line in [b'$33=20.0', b'$34=50.0', b'$35=74.0', b'$36=86.0']:
+            self.assertIn(line, b.serial)
 
 
 if __name__ == '__main__':

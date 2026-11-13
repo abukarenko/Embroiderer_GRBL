@@ -20,10 +20,61 @@
 */
 
 #include "grbl.h"
+#include <stddef.h>
 
 settings_t settings;
 
 static void write_global_settings(void);
+
+static void settings_default_embroidery_pwm(void)
+{
+  settings.embroidery_trim_pwm = DEFAULT_EMBROIDERY_TRIM_PWM;
+  settings.embroidery_neutral_pwm = DEFAULT_EMBROIDERY_NEUTRAL_PWM;
+  settings.embroidery_long_pwm = DEFAULT_EMBROIDERY_LONG_PWM;
+  settings.embroidery_short_pwm = DEFAULT_EMBROIDERY_SHORT_PWM;
+}
+
+static uint8_t settings_embroidery_pwm_valid(const settings_t *profile)
+{
+  return profile->embroidery_trim_pwm < profile->embroidery_neutral_pwm &&
+         profile->embroidery_neutral_pwm < profile->embroidery_long_pwm &&
+         profile->embroidery_long_pwm <= profile->embroidery_short_pwm &&
+         profile->embroidery_short_pwm <= 1000U;
+}
+
+_Static_assert(sizeof(settings_t) + 1U < EEPROM_ADDR_PARAMETERS - EEPROM_ADDR_GLOBAL,
+               "Global settings overlap coordinate records");
+_Static_assert(offsetof(settings_t, embroidery_trim_pwm) == 110U,
+               "Legacy v13 settings prefix changed");
+
+/* A read-only boot path: obtain neutral before enabling TIM1, without
+   EEPROM migration, display/serial calls or flash writes. */
+uint16_t settings_read_boot_neutral_pwm(void)
+{
+  settings_t saved;
+  eeprom_init();
+  if (eeprom_get_char(0) == SETTINGS_VERSION &&
+      memcpy_from_eeprom_with_checksum((char *)&saved, EEPROM_ADDR_GLOBAL, sizeof(saved)) &&
+      settings_embroidery_pwm_valid(&saved)) {
+    return saved.embroidery_neutral_pwm;
+  }
+  return DEFAULT_EMBROIDERY_NEUTRAL_PWM;
+}
+
+static uint8_t settings_migrate_v13(void)
+{
+  /* v13 has 110 meaningful bytes and two tail-padding bytes. New fields
+     can reuse that padding, so initialize them AFTER copying the old record. */
+  char old[112];
+  if (!memcpy_from_eeprom_with_checksum(old, EEPROM_ADDR_GLOBAL, sizeof(old))) {
+    return false;
+  }
+  memset(&settings, 0, sizeof(settings));
+  memcpy(&settings, old, sizeof(old));
+  settings_default_embroidery_pwm();
+  write_global_settings();
+  return true;
+}
 
 typedef struct {
   float steps_per_mm[3];
@@ -111,6 +162,7 @@ static uint8_t settings_migrate_v12(void)
   memset(&settings, 0, sizeof(settings));
   memcpy(&settings, &old, sizeof(old));
   settings.spindle_pwm_min_percent = DEFAULT_SPINDLE_PWM_MIN_PERCENT;
+  settings_default_embroidery_pwm();
   write_global_settings();
   return true;
 }
@@ -127,6 +179,8 @@ static uint8_t settings_migrate_v11(void)
   memset(&settings, 0, sizeof(settings));
   memcpy(&settings, &old, sizeof(old));
   settings.probe_resume_enable = DEFAULT_PROBE_RESUME_ENABLE;
+  settings.spindle_pwm_min_percent = DEFAULT_SPINDLE_PWM_MIN_PERCENT;
+  settings_default_embroidery_pwm();
   write_global_settings();
   return true;
 }
@@ -178,6 +232,8 @@ static uint8_t settings_migrate_v10(void)
   settings.homing_seek_rate = old.homing_seek_rate;
   settings.homing_debounce_delay = old.homing_debounce_delay;
   settings.homing_pulloff = old.homing_pulloff;
+  settings.spindle_pwm_min_percent = DEFAULT_SPINDLE_PWM_MIN_PERCENT;
+  settings_default_embroidery_pwm();
   write_global_settings();
 
   for (idx = 0U; idx <= SETTING_INDEX_NCOORD; idx++) {
@@ -245,6 +301,7 @@ void settings_restore(uint8_t restore_flag) {
     settings.arc_tolerance = DEFAULT_ARC_TOLERANCE;
     settings.probe_resume_enable = DEFAULT_PROBE_RESUME_ENABLE;
     settings.spindle_pwm_min_percent = DEFAULT_SPINDLE_PWM_MIN_PERCENT;
+    settings_default_embroidery_pwm();
 
     settings.rpm_max = DEFAULT_SPINDLE_RPM_MAX;
     settings.rpm_min = DEFAULT_SPINDLE_RPM_MIN;
@@ -360,6 +417,10 @@ uint8_t read_global_settings() {
     if (!(memcpy_from_eeprom_with_checksum((char*)&settings, EEPROM_ADDR_GLOBAL, sizeof(settings_t)))) {
       return(false);
     }
+    if (!settings_embroidery_pwm_valid(&settings)) {
+      settings_default_embroidery_pwm();
+      write_global_settings(); // Keep valid motion calibration, repair only the PWM profile.
+    }
   } else {
     return(false);
   }
@@ -369,7 +430,31 @@ uint8_t read_global_settings() {
 
 // A helper method to set settings from command line
 uint8_t settings_store_global_setting(uint8_t parameter, float value) {
+  if (!isfinite(value)) { return STATUS_INVALID_STATEMENT; }
   if (value < 0.0f) { return(STATUS_NEGATIVE_VALUE); }
+  if (parameter >= 33U && parameter <= 36U) {
+    if (value > 100.0f) { return STATUS_INVALID_STATEMENT; }
+    if ((sys.state != STATE_IDLE && sys.state != STATE_ALARM) || sys.suspend ||
+        embroidery_accessory_busy() || embroidery_hold_status() ||
+        grbl_platform_spindle_get_enable()) {
+      return STATUS_IDLE_ERROR;
+    }
+    settings_t next = settings;
+    uint16_t pwm = (uint16_t)lroundf(value * 10.0f);
+    switch (parameter) {
+      case 33: next.embroidery_trim_pwm = pwm; break;
+      case 34: next.embroidery_neutral_pwm = pwm; break;
+      case 35: next.embroidery_long_pwm = pwm; break;
+      case 36: next.embroidery_short_pwm = pwm; break;
+    }
+    if (!settings_embroidery_pwm_valid(&next)) { return STATUS_INVALID_STATEMENT; }
+    settings = next;
+    /* Apply a changed neutral with a single CCR1 write, no transient replay
+       of the previously requested PWM. OUT1 remains disabled. */
+    if (parameter == 34U) { grbl_platform_spindle_set_pwm(0U); }
+    write_global_settings();
+    return STATUS_OK;
+  }
   if (parameter >= AXIS_SETTINGS_START_VAL) {
     // Store axis configuration. Axis numbering sequence set by AXIS_SETTING defines.
     // NOTE: Ensure the setting index corresponds to the report.c settings printout.
@@ -495,6 +580,10 @@ uint8_t settings_store_global_setting(uint8_t parameter, float value) {
 
 // Initialize the config subsystem
 void settings_init() {
+  if ((eeprom_get_char(0) == SETTINGS_VERSION_LEGACY_PWM_MINIMUM) &&
+      settings_migrate_v13()) {
+    return;
+  }
   if ((eeprom_get_char(0) == SETTINGS_VERSION_LEGACY_PROBE_RESUME) &&
       settings_migrate_v12()) {
     return;

@@ -1309,6 +1309,12 @@ void BoardTest_SetSpindlePwmMinimum(uint16_t permille) {
   BoardTest_SetSpindlePwm(spindle_pwm_requested_permille);
 }
 
+void BoardTest_SetSpindlePwmNeutral(uint16_t permille) {
+  if (permille > 1000U) { permille = 1000U; }
+  spindle_pwm_minimum_permille = permille;
+  BoardTest_SetSpindlePwm(permille);
+}
+
 void BoardTest_SetGrblStatus(const float machine_position[4],
                              float spindle_speed, uint8_t limit_state,
                              uint8_t probe_state, const char *state_text) {
@@ -1432,6 +1438,7 @@ void BoardTest_IdcInit(void) {
 
 void BoardTest_PwmInit(void) {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
+  spindle_pwm_minimum_permille = settings_read_boot_neutral_pwm();
 
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_TIM1_CLK_ENABLE();

@@ -212,6 +212,10 @@ void report_grbl_settings() {
     report_util_uint8_setting(32,0);
   #endif
   // Print axis settings
+  report_util_float_setting(33, settings.embroidery_trim_pwm * 0.1f, 1);
+  report_util_float_setting(34, settings.embroidery_neutral_pwm * 0.1f, 1);
+  report_util_float_setting(35, settings.embroidery_long_pwm * 0.1f, 1);
+  report_util_float_setting(36, settings.embroidery_short_pwm * 0.1f, 1);
   uint8_t idx, set_idx;
   uint8_t val = AXIS_SETTINGS_START_VAL;
   for (set_idx=0; set_idx<AXIS_N_SETTINGS; set_idx++) {

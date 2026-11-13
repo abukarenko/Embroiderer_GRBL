@@ -27,7 +27,8 @@
 
 // Version of the EEPROM data. Will be used to migrate existing data from older versions of Grbl
 // when firmware is upgraded. Always stored in byte 0 of eeprom
-#define SETTINGS_VERSION 13  // Adds persistent minimum PWM percentage.
+#define SETTINGS_VERSION 14  // Adds the configurable embroidery PWM profile.
+#define SETTINGS_VERSION_LEGACY_PWM_MINIMUM 13
 #define SETTINGS_VERSION_LEGACY_PROBE_RESUME 12
 #define SETTINGS_VERSION_LEGACY_4_AXIS 11
 #define SETTINGS_VERSION_LEGACY_3_AXIS 10
@@ -105,12 +106,17 @@ typedef struct {
   uint16_t homing_debounce_delay;
   float homing_pulloff;
   uint8_t probe_resume_enable; // $7: use probe input to resume an M0 pause.
-  uint8_t spindle_pwm_min_percent; // $8: absolute PWM floor, 0..100 percent.
+  uint8_t spindle_pwm_min_percent; // $8: legacy compatibility field; neutral is $34.
+  uint16_t embroidery_trim_pwm;    // $33, permille internally, percent in terminal.
+  uint16_t embroidery_neutral_pwm; // $34.
+  uint16_t embroidery_long_pwm;    // $35, stitch length >= 8 mm.
+  uint16_t embroidery_short_pwm;   // $36, stitch length <= 2 mm.
 } settings_t;
 extern settings_t settings;
 
 // Initialize the configuration subsystem (load settings from EEPROM)
 void settings_init();
+uint16_t settings_read_boot_neutral_pwm(void);
 
 // Helper function to clear and restore EEPROM defaults
 void settings_restore(uint8_t restore_flag);

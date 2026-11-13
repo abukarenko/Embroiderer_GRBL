@@ -12,7 +12,8 @@ static uint32_t embroidery_trim_started;
 
 uint16_t embroidery_speed_for_distance_squared(float distance_squared)
 {
-  return embroidery_speed_pwm(distance_squared);
+  return embroidery_speed_pwm(distance_squared, settings.embroidery_short_pwm,
+                               settings.embroidery_long_pwm);
 }
 
 uint8_t embroidery_needle_down(void)
@@ -101,7 +102,7 @@ void embroidery_trim(void)
   embroidery_trim_started = HAL_GetTick();
   embroidery_trimming = 1U;
   BoardTest_SetSpindlePwmMinimum(0U);
-  BoardTest_SetSpindlePwm(EMBROIDERY_TRIM_PWM);
+  BoardTest_SetSpindlePwm(settings.embroidery_trim_pwm);
   if (!primask) { __enable_irq(); }
   started = embroidery_trim_started;
   while ((uint32_t)(HAL_GetTick() - started) < EMBROIDERY_TRIM_MS) {
@@ -289,8 +290,7 @@ void grbl_platform_spindle_init(void)
 {
   embroidery_waiting = embroidery_armed = embroidery_permit = 0U;
   embroidery_between_stitches = embroidery_trimming = 0U;
-  grbl_platform_spindle_set_minimum_percent(settings.spindle_pwm_min_percent);
-  BoardTest_SetSpindlePwm(SPINDLE_PWM_OFF_VALUE);
+  grbl_platform_spindle_set_pwm(SPINDLE_PWM_OFF_VALUE);
   grbl_platform_spindle_set_enable(0U);
   grbl_platform_spindle_set_direction(0U);
 }
@@ -311,17 +311,18 @@ void grbl_platform_spindle_set_pwm(uint16_t pwm)
   if (pwm == 0U) {
     embroidery_trimming = 0U;
     embroidery_between_stitches = 0U;
-    pwm = EMBROIDERY_NEUTRAL_PWM;
+    BoardTest_SetSpindlePwmNeutral(settings.embroidery_neutral_pwm);
+    return;
   }
-  BoardTest_SetSpindlePwmMinimum(EMBROIDERY_NEUTRAL_PWM);
-  if (pwm > 860U) { pwm = 860U; }
+  BoardTest_SetSpindlePwmMinimum(settings.embroidery_neutral_pwm);
+  if (pwm > settings.embroidery_short_pwm) { pwm = settings.embroidery_short_pwm; }
   BoardTest_SetSpindlePwm(pwm);
 }
 
 void grbl_platform_spindle_set_minimum_percent(uint8_t percent)
 {
   (void)percent;
-  BoardTest_SetSpindlePwmMinimum(EMBROIDERY_NEUTRAL_PWM);
+  /* $8 is retained only as a legacy compatibility setting. $34 is neutral. */
 }
 
 uint8_t grbl_platform_spindle_get_enable(void)

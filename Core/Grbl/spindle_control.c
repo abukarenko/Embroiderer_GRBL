@@ -257,9 +257,11 @@ void spindle_stop()
   {
 
     rpm *= 0.010f * sys.spindle_speed_ovr;
-    if (rpm <= 0.0f) { sys.spindle_speed = 0.0f; return 0U; }
-    if (rpm < 580.0f) { rpm = 580.0f; }
-    if (rpm > 860.0f) { rpm = 860.0f; }
+    if (rpm <= settings.embroidery_neutral_pwm) {
+      sys.spindle_speed = 0.0f;
+      return 0U;
+    }
+    if (rpm > settings.embroidery_short_pwm) { rpm = settings.embroidery_short_pwm; }
     sys.spindle_speed = rpm;
     return (SPINDLE_PWM_TYPE)rpm;
 
